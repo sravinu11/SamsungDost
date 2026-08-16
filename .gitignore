@@ -1,0 +1,6 @@
+config.secrets.php
+dbdata.xlsx
+~$*
+*.log
+.DS_Store
+Thumbs.db
