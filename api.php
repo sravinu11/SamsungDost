@@ -93,6 +93,17 @@ foreach ($intakeRows as $r) {
     $intakeMap[$r['label']][$r['business']] = (int) $r['count'];
 }
 $businessNames = array_map(fn($r) => $r['name'], $business);
+
+/* CAN ID (e-KYC) generated = any non-null value starting "CAN" in can_id_ekyc */
+$canIdSql = $whereSql === ""
+    ? "SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM dost2026 WHERE UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1"
+    : "SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM dost2026 $whereSql AND UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1";
+$canIdRows = q($pdo, $canIdSql, $params);
+$canIdMap = [];
+foreach ($canIdRows as $r) { $canIdMap[$r['name']] = (int) $r['count']; }
+$canIdByBusiness = [];
+foreach ($businessNames as $bname) { $canIdByBusiness[] = ['name' => $bname, 'count' => $canIdMap[$bname] ?? 0]; }
+
 $dailyIntake = [];
 foreach ($intakeOrder as $label) {
     $entry = ['label' => $label];
@@ -136,6 +147,7 @@ echo json_encode([
     'region' => $region,
     'state' => $state,
     'business' => $business,
+    'canIdByBusiness' => $canIdByBusiness,
     'partner' => $partner,
     'duration' => $duration,
     'dailyIntake' => $dailyIntake,

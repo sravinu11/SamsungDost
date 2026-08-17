@@ -186,7 +186,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
   .filter-count { font-size: 11.5px; color: var(--text-muted); flex: none; padding-bottom: 8px; }
   .filter-count strong { color: var(--accent); font-variant-numeric: tabular-nums; }
 
-  .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
   .kpi {
     background: var(--glass-bg); backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
     border: 1px solid var(--glass-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;
@@ -197,6 +197,11 @@ $isAdmin = $_SESSION['role'] === 'ALL';
   .kpi-value { font-size: 25px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .kpi-sub { font-size: 11.5px; color: var(--text-secondary); }
   .kpi-sub b { color: var(--text-primary); }
+
+  .kpi-breakdown-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+  .kpi-breakdown-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+  .kpi-breakdown-row span { color: var(--text-secondary); font-weight: 650; }
+  .kpi-breakdown-row b { color: var(--text-primary); font-variant-numeric: tabular-nums; font-size: 15px; }
 
   .section-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 0; }
   .section-title h2 { font-size: 16px; font-weight: 700; margin: 0; }
@@ -245,6 +250,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     border: 1px solid var(--glass-border); border-radius: 10px; padding: 8px 12px;
   }
+  .error-banner { color: var(--critical); border-color: var(--critical); font-weight: 600; }
 
   .table-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .btn-export {
@@ -334,6 +340,8 @@ $isAdmin = $_SESSION['role'] === 'ALL';
     </div>
 
     <div class="kpi-row" id="kpiRow"></div>
+
+    <div class="note-banner error-banner" id="errorBanner" hidden></div>
 
     <div class="note-banner">--.</div>
 
@@ -444,8 +452,9 @@ function hBarChart(mount, data, opts = {}) {
     g.appendChild(svgEl('rect', { class: 'mark', x: labelW, y, width: w, height: rowH, rx: 4, fill: color }));
     const vt = svgEl('text', { x: labelW + w + 8, y: y + rowH / 2 + 4, class: 'value-label' });
     vt.textContent = fmt(d.count); g.appendChild(vt);
-    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} candidates`));
+    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} candidates${opts.onClick ? ' — click to filter' : ''}`));
     g.addEventListener('mouseleave', hideTip);
+    if (opts.onClick) g.addEventListener('click', () => opts.onClick(d));
     svg.appendChild(g);
   });
   mount.appendChild(svg);
@@ -484,8 +493,9 @@ function vBarChart(mount, data, opts = {}) {
       : { x: x + w / 2, y: padT + plotH + 16, 'text-anchor': 'middle', class: 'axis-label' };
     const lbl = svgEl('text', lblAttrs);
     lbl.textContent = d.name; g.appendChild(lbl);
-    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} candidates`));
+    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} candidates${opts.onClick ? ' — click to filter' : ''}`));
     g.addEventListener('mouseleave', hideTip);
+    if (opts.onClick) g.addEventListener('click', () => opts.onClick(d));
     svg.appendChild(g);
   });
   mount.appendChild(svg);
@@ -518,12 +528,20 @@ function groupedBarChart(mount, data, series, opts = {}) {
         const valLbl = svgEl('text', { x: x + (barW - 3) / 2, y: y - 4, 'text-anchor': 'middle', class: 'value-label', style: 'font-size:8.5px' });
         valLbl.textContent = fmt(val); g.appendChild(valLbl);
       }
-      g.addEventListener('mousemove', e => showTip(e, `<b>${d.label}</b><br>${s.name}: ${fmt(val)}`));
+      g.addEventListener('mousemove', e => showTip(e, `<b>${d.label}</b><br>${s.name}: ${fmt(val)}${opts.onSeriesClick ? ' — click to filter' : ''}`));
       g.addEventListener('mouseleave', hideTip);
+      if (opts.onSeriesClick) g.addEventListener('click', evt => { evt.stopPropagation(); opts.onSeriesClick(d, s); });
       svg.appendChild(g);
     });
+    const lblGroup = svgEl('g', { class: opts.onGroupClick ? 'bar-hit' : '' });
     const lbl = svgEl('text', { x: padL + i * groupW + groupW / 2, y: padT + plotH + 16, 'text-anchor': 'middle', class: 'axis-label' });
-    lbl.textContent = d.label; svg.appendChild(lbl);
+    lbl.textContent = d.label; lblGroup.appendChild(lbl);
+    if (opts.onGroupClick) {
+      lblGroup.addEventListener('click', () => opts.onGroupClick(d));
+      lblGroup.addEventListener('mousemove', e => showTip(e, `<b>${d.label}</b><br>click to filter`));
+      lblGroup.addEventListener('mouseleave', hideTip);
+    }
+    svg.appendChild(lblGroup);
   });
   mount.appendChild(svg);
 }
@@ -546,8 +564,9 @@ function donutChart(mount, data, opts = {}) {
       'stroke-dashoffset': -offset, transform: `rotate(-90 ${cx} ${cy})`, 'stroke-linecap': 'butt'
     });
     g.appendChild(circle);
-    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} (${(frac * 100).toFixed(1)}%)`));
+    g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} (${(frac * 100).toFixed(1)}%)${opts.onClick ? ' — click to filter' : ''}`));
     g.addEventListener('mouseleave', hideTip);
+    if (opts.onClick) g.addEventListener('click', () => opts.onClick(d));
     svg.appendChild(g);
     if (frac >= 0.12) {
       const startFrac = offset / circumference;
@@ -602,16 +621,49 @@ function buildQuery() {
   return params.toString();
 }
 
+/* Click-to-filter: clicking a bar/segment applies its category as a filter
+   for that dimension. Clicking the same single value again clears it. */
+function applyDrilldown(field, value) {
+  if (!value || value === 'Other') return;
+  const isSameSingleSelection = state[field].length === 1 && state[field][0] === value;
+  state[field] = isSameSingleSelection ? [] : [value];
+  loadAndRender();
+}
+
+function applyDrilldownMulti(pairs) {
+  let changed = false;
+  pairs.forEach(([field, value]) => {
+    if (!value || value === 'Other') return;
+    state[field] = [value];
+    changed = true;
+  });
+  if (changed) loadAndRender();
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  return res.json();
+}
+
 async function loadAndRender() {
   tablePage = 1;
   const q = buildQuery();
-  const [apiData, tableData] = await Promise.all([
-    fetch('api.php?' + q).then(r => r.json()),
-    fetchTableData(1, q),
-  ]);
-  renderFilterOptions(apiData.filterOptions);
-  renderAll(apiData);
-  renderTable(tableData);
+  const errorBanner = document.getElementById('errorBanner');
+  try {
+    const [apiData, tableData] = await Promise.all([
+      fetchJson('api.php?' + q),
+      fetchTableData(1, q),
+    ]);
+    errorBanner.hidden = true;
+    renderFilterOptions(apiData.filterOptions);
+    renderAll(apiData);
+    renderTable(tableData);
+  } catch (err) {
+    errorBanner.textContent = 'Could not load dashboard data — the server returned an unexpected response. Try refreshing; if it keeps happening, the database schema may have changed.';
+    errorBanner.hidden = false;
+    console.error('loadAndRender failed:', err);
+  }
 }
 
 function renderFilterOptions(filterOptions) {
@@ -748,22 +800,34 @@ function renderAll(data) {
     kpiRow.appendChild(el);
   });
 
+  const canIdEl = document.createElement('div');
+  canIdEl.className = 'kpi';
+  const canRowsHtml = (data.canIdByBusiness || []).map(r => `<div class="kpi-breakdown-row"><span>${r.name}</span><b>${fmt(r.count)}</b></div>`).join('');
+  canIdEl.innerHTML = `<div class="kpi-label">CAN ID Generated (e-KYC)</div><div class="kpi-breakdown-rows">${canRowsHtml || '<div class="kpi-breakdown-row"><span>—</span></div>'}</div>`;
+  kpiRow.appendChild(canIdEl);
+
   const bizColors = { MX: c.accent, DA: c.accent2, VD: c.slot3 };
   const bizFallback = [c.accent, c.accent2, c.slot3, c.slot4];
   const intakeSeries = data.businessNames.map((name, i) => ({ key: name, name, color: bizColors[name] || bizFallback[i % bizFallback.length] }));
   const chartIntake = document.getElementById('chartIntake'); clear(chartIntake);
-  groupedBarChart(chartIntake, data.dailyIntake, intakeSeries, { width: 700, height: 260 });
+  groupedBarChart(chartIntake, data.dailyIntake, intakeSeries, {
+    width: 700, height: 260,
+    onSeriesClick: (d, s) => applyDrilldown('business', s.key),
+  });
   if (data.dailyIntake.length) legend(chartIntake, intakeSeries.map(s => ({ name: s.name, color: s.color })));
 
   const chartPartner = document.getElementById('chartPartner'); clear(chartPartner);
-  hBarChart(chartPartner, data.partner, { width: 480, labelW: 90, rowH: 30, color: c.accent });
+  hBarChart(chartPartner, data.partner, {
+    width: 480, labelW: 90, rowH: 30, color: c.accent,
+    onClick: d => applyDrilldown('partner', d.name),
+  });
 
   const chartDuration = document.getElementById('chartDuration'); clear(chartDuration);
   vBarChart(chartDuration, data.duration, { width: 560, height: 240, color: c.accent });
 
   const chartBusiness = document.getElementById('chartBusiness'); clear(chartBusiness);
   const bizData = data.business.map(d => ({ ...d, color: bizColors[d.name] || c.axis }));
-  donutChart(chartBusiness, bizData, { size: 176 });
+  donutChart(chartBusiness, bizData, { size: 176, onClick: d => applyDrilldown('business', d.name) });
   if (data.filtered) legend(chartBusiness, bizData);
 
   const genderColors = { Male: c.accent, Female: c.slot5, Unknown: c.axis };
@@ -776,20 +840,33 @@ function renderAll(data) {
   vBarChart(chartAge, data.ageBuckets, { width: 340, height: 220, color: c.accent });
 
   const chartQual = document.getElementById('chartQual'); clear(chartQual);
-  vBarChart(chartQual, data.qualification, { width: 340, height: 250, color: c.accent, rotateLabels: true });
+  vBarChart(chartQual, data.qualification, {
+    width: 340, height: 250, color: c.accent, rotateLabels: true,
+    onClick: d => applyDrilldown('qualification', d.name),
+  });
 
   const chartRegion = document.getElementById('chartRegion'); clear(chartRegion);
-  vBarChart(chartRegion, data.region, { width: 640, height: 280, color: c.accent, rotateLabels: true });
+  vBarChart(chartRegion, data.region, {
+    width: 640, height: 280, color: c.accent, rotateLabels: true,
+    onClick: d => applyDrilldown('region', d.name),
+  });
 
   const partnerColors = { TSSC: c.accent, ESSCI: c.accent2 };
   const fallbackColors = [c.accent, c.accent2, c.slot3, c.slot4];
   const partnerSeries = data.partnerNames.map((name, i) => ({ key: name, name, color: partnerColors[name] || fallbackColors[i % fallbackColors.length] }));
   const chartRegionPartner = document.getElementById('chartRegionPartner'); clear(chartRegionPartner);
-  groupedBarChart(chartRegionPartner, data.regionPartner, partnerSeries, { width: 560, height: 250 });
+  groupedBarChart(chartRegionPartner, data.regionPartner, partnerSeries, {
+    width: 560, height: 250,
+    onGroupClick: d => applyDrilldown('region', d.label),
+    onSeriesClick: (d, s) => applyDrilldownMulti([['region', d.label], ['partner', s.key]]),
+  });
   if (data.regionPartner.length) legend(chartRegionPartner, partnerSeries.map(s => ({ name: s.name, color: s.color })));
 
   const chartState = document.getElementById('chartState'); clear(chartState);
-  vBarChart(chartState, data.state, { width: 1000, height: 280, color: c.accent, rotateLabels: true });
+  vBarChart(chartState, data.state, {
+    width: 1000, height: 280, color: c.accent, rotateLabels: true,
+    onClick: d => applyDrilldown('state', d.name),
+  });
 }
 
 /* ---------------- candidate records table ---------------- */
@@ -800,14 +877,21 @@ async function fetchTableData(page, query) {
   const params = new URLSearchParams(query);
   params.set('page', page);
   params.set('pageSize', PAGE_SIZE);
-  const res = await fetch('rows.php?' + params.toString());
-  return res.json();
+  return fetchJson('rows.php?' + params.toString());
 }
 
 async function loadTable(page) {
   tablePage = page;
-  const data = await fetchTableData(page, buildQuery());
-  renderTable(data);
+  try {
+    const data = await fetchTableData(page, buildQuery());
+    document.getElementById('errorBanner').hidden = true;
+    renderTable(data);
+  } catch (err) {
+    const errorBanner = document.getElementById('errorBanner');
+    errorBanner.textContent = 'Could not load that page of results — try again.';
+    errorBanner.hidden = false;
+    console.error('loadTable failed:', err);
+  }
 }
 
 function renderTable(data) {

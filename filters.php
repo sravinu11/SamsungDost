@@ -16,21 +16,6 @@ $GENDER_EXPR = "CASE
     ELSE 'Unknown'
 END";
 
-/* hardcoded (not re-queried from information_schema every request) to avoid an extra round trip per page load */
-$ALL_COLUMNS = [
-    'sr_no', 'implementation_partner', 'vertical_type', 'business_type', 'candidate_unique_id',
-    'sidh_batch_id', 'candidate_hiring_status', 'badge_status', 'store_owner_survey', 'can_id_ekyc',
-    'oms_id', 'region', 'state_name', 'location', 'ho_id', 'candidate_name', 'contact_number',
-    'gender', 'date_of_birth', 'age_in_years', 'fathers_name', 'qualification', 'email_id',
-    't_shirt_size', 'ojt_welcome_letter', 'posh_training', 'assessment_status', 'assessment_completed',
-    'result', 'certificate_status', 'lwd', 'total_lms_hours', 'ojt_start_date', 'ojt_end_date',
-    'ojt_duration', 'nhit_test_number', 'nhit_test_yn', 'abm_approval', 'sales_aptitude_status',
-    'sales_aptitude_training_interviewer', 'category_pc_npc_ot', 'channel_mbo_exc_dcm_star_dcm_ot',
-    'outlet_type', 'asd', 'parent_code', 'child_code', 'store_id', 'store_name', 'store_address',
-    'tl_name', 'tl_contact', 'ase_ho_id', 'zse_ho_id', 'aadhar_number', 'm1_survey', 'm2_survey',
-    'm3_survey', 'm4_survey', 'm5_survey', 'working_status',
-];
-
 $DIMS = [
     'business'      => "TRIM(business_type)",
     'partner'       => "TRIM(implementation_partner)",

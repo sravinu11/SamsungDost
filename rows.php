@@ -15,7 +15,7 @@ $page = max(1, (int) ($_GET['page'] ?? 1));
 $pageSize = min(200, max(10, (int) ($_GET['pageSize'] ?? 50)));
 $offset = ($page - 1) * $pageSize;
 
-$cols = $ALL_COLUMNS;
+$cols = get_table_columns($pdo, 'dost2026');
 
 $countStmt = $pdo->prepare("SELECT COUNT(*) FROM dost2026 $whereSql");
 $countStmt->execute($params);

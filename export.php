@@ -10,7 +10,7 @@ $pdo = get_pdo();
 
 [$whereSql, $params] = whereClause($DIMS, $activeFilters, null);
 
-$cols = $ALL_COLUMNS;
+$cols = get_table_columns($pdo, 'dost2026');
 $colList = implode(", ", array_map(fn($c) => "\"$c\"", $cols));
 
 $stmt = $pdo->prepare("SELECT $colList FROM dost2026 $whereSql ORDER BY NULLIF(sr_no,'')::int NULLS LAST");
