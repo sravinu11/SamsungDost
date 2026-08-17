@@ -1,5 +1,12 @@
 <?php
 
+/* Compress responses when the client supports it — cuts transfer time for
+   the JSON payloads and the dashboard's HTML/JS bundle. Must be set before
+   any output is produced, so this has to happen at the very top. */
+if (!ini_get('zlib.output_compression')) {
+    ini_set('zlib.output_compression', '1');
+}
+
 /* Local-only overrides (never committed — see .gitignore). On Render, the
    equivalent values are set as real environment variables in the dashboard. */
 $secretsFile = __DIR__ . "/config.secrets.php";

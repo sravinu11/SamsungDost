@@ -9,16 +9,28 @@ header("Content-Type: application/json");
 $activeFilters = apply_role_lock(activeFilters($DIMS));
 $pdo = get_pdo();
 
-/* ---- filter options (cascading: each dim excludes its own filter) ---- */
-$filterOptions = [];
+/* ---- filter options (cascading: each dim excludes its own filter) ----
+   All 6 dimensions are pulled in a single round trip via UNION ALL instead
+   of one query per dimension — each Neon round trip costs ~250-300ms, so
+   this alone saves the better part of a second per page load. */
+$foParts = [];
+$foParams = [];
 foreach ($DIMS as $dim => $expr) {
-    [$whereSql, $params] = whereClause($DIMS, $activeFilters, $dim);
-    $sql = "SELECT $expr AS label, COUNT(*) AS c FROM dost2026 $whereSql
-            GROUP BY 1 HAVING $expr IS NOT NULL AND $expr <> '' ORDER BY 1";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $filterOptions[$dim] = $stmt->fetchAll();
+    [$ws, $p] = whereClause($DIMS, $activeFilters, $dim);
+    $foParts[] = "SELECT '$dim' AS dim, $expr AS label, COUNT(*) AS c
+                  FROM dost2026 $ws GROUP BY 2 HAVING $expr IS NOT NULL AND $expr <> ''";
+    foreach ($p as $k => $v) { $foParams[$k] = $v; }
 }
+$foStmt = $pdo->prepare(implode("\nUNION ALL\n", $foParts));
+$foStmt->execute($foParams);
+$filterOptions = array_fill_keys(array_keys($DIMS), []);
+foreach ($foStmt->fetchAll() as $r) {
+    $filterOptions[$r['dim']][] = ['label' => $r['label'], 'c' => (int) $r['c']];
+}
+foreach ($filterOptions as &$opts) {
+    usort($opts, fn($a, $b) => strcmp($a['label'], $b['label']));
+}
+unset($opts);
 if ($_SESSION['role'] !== 'ALL') {
     $filterOptions['partner'] = array_values(array_filter(
         $filterOptions['partner'],
@@ -26,27 +38,12 @@ if ($_SESSION['role'] !== 'ALL') {
     ));
 }
 
-/* ---- main filtered aggregates ---- */
+/* ---- main filtered aggregates ----
+   This used to be ~13 separate queries (one round trip each). They all
+   read from the same filtered row set, so they're now computed as CTEs
+   off a single `base` CTE and fetched in one round trip, with each
+   chart's rows packed as a JSON column. */
 [$whereSql, $params] = whereClause($DIMS, $activeFilters, null);
-
-function q($pdo, $sql, $params) {
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    return $stmt->fetchAll();
-}
-
-$total = (int) $pdo->query("SELECT COUNT(*) FROM dost2026")->fetchColumn();
-
-$kpiRow = q($pdo, "SELECT
-        COUNT(*) AS n,
-        AVG(NULLIF(age_in_years,'')::numeric) AS avg_age,
-        AVG(NULLIF(ojt_duration,'')::numeric) AS avg_duration,
-        100.0 * SUM(CASE WHEN UPPER(TRIM(nhit_test_yn)) = 'YES' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS nhit_pct,
-        100.0 * SUM(CASE WHEN $GENDER_EXPR = 'Male' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS male_pct,
-        100.0 * SUM(CASE WHEN $GENDER_EXPR = 'Female' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS female_pct
-    FROM dost2026 $whereSql", $params)[0];
-
-$gender = q($pdo, "SELECT $GENDER_EXPR AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
 
 $ageBucketExpr = "CASE
     WHEN NULLIF(age_in_years,'')::int BETWEEN 18 AND 20 THEN '18-20'
@@ -55,55 +52,89 @@ $ageBucketExpr = "CASE
     WHEN NULLIF(age_in_years,'')::int BETWEEN 27 AND 29 THEN '27-29'
     ELSE 'Other'
 END";
-$ageRaw = q($pdo, "SELECT $ageBucketExpr AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1", $params);
+
+$sql = "
+WITH base AS (
+    SELECT * FROM dost2026 $whereSql
+),
+kpi AS (
+    SELECT
+        COUNT(*) AS n,
+        AVG(NULLIF(age_in_years,'')::numeric) AS avg_age,
+        AVG(NULLIF(ojt_duration,'')::numeric) AS avg_duration,
+        100.0 * SUM(CASE WHEN UPPER(TRIM(nhit_test_yn)) = 'YES' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS nhit_pct,
+        100.0 * SUM(CASE WHEN $GENDER_EXPR = 'Male' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS male_pct,
+        100.0 * SUM(CASE WHEN $GENDER_EXPR = 'Female' THEN 1 ELSE 0 END) / GREATEST(COUNT(*),1) AS female_pct
+    FROM base
+),
+gender_g AS (SELECT $GENDER_EXPR AS name, COUNT(*) AS count FROM base GROUP BY 1),
+age_g AS (SELECT $ageBucketExpr AS name, COUNT(*) AS count FROM base GROUP BY 1),
+qual_g AS (SELECT $QUAL_EXPR AS name, COUNT(*) AS count FROM base GROUP BY 1),
+region_g AS (SELECT INITCAP(TRIM(region)) AS name, COUNT(*) AS count FROM base GROUP BY 1),
+business_g AS (SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM base GROUP BY 1),
+partner_g AS (SELECT TRIM(implementation_partner) AS name, COUNT(*) AS count FROM base GROUP BY 1),
+state_g AS (SELECT INITCAP(TRIM(state_name)) AS name, COUNT(*) AS count FROM base GROUP BY 1),
+duration_g AS (SELECT NULLIF(ojt_duration,'')::int AS name, COUNT(*) AS count FROM base WHERE NULLIF(ojt_duration,'') IS NOT NULL GROUP BY 1),
+intake_g AS (
+    SELECT ojt_start_date AS d, to_char(ojt_start_date,'DD Mon') AS label, TRIM(business_type) AS business, COUNT(*) AS count
+    FROM base WHERE ojt_start_date IS NOT NULL GROUP BY 1, 2, 3
+),
+canid_g AS (SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM base WHERE UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1),
+regionpartner_g AS (SELECT INITCAP(TRIM(region)) AS region, TRIM(implementation_partner) AS partner, COUNT(*) AS count FROM base GROUP BY 1, 2),
+total_g AS (SELECT COUNT(*) AS c FROM dost2026)
+SELECT
+    (SELECT c FROM total_g) AS total,
+    (SELECT row_to_json(k) FROM kpi k) AS kpi,
+    (SELECT COALESCE(json_agg(g ORDER BY g.count DESC), '[]') FROM gender_g g) AS gender,
+    (SELECT COALESCE(json_agg(a), '[]') FROM age_g a) AS age,
+    (SELECT COALESCE(json_agg(q ORDER BY q.count DESC), '[]') FROM qual_g q) AS qualification,
+    (SELECT COALESCE(json_agg(r ORDER BY r.count DESC), '[]') FROM region_g r) AS region,
+    (SELECT COALESCE(json_agg(b ORDER BY b.count DESC), '[]') FROM business_g b) AS business,
+    (SELECT COALESCE(json_agg(p ORDER BY p.count DESC), '[]') FROM partner_g p) AS partner,
+    (SELECT COALESCE(json_agg(s ORDER BY s.count DESC), '[]') FROM state_g s) AS state,
+    (SELECT COALESCE(json_agg(d ORDER BY d.name), '[]') FROM duration_g d) AS duration,
+    (SELECT COALESCE(json_agg(json_build_object('label', i.label, 'business', i.business, 'count', i.count) ORDER BY i.d), '[]') FROM intake_g i) AS intake,
+    (SELECT COALESCE(json_agg(c ORDER BY c.count DESC), '[]') FROM canid_g c) AS canid,
+    (SELECT COALESCE(json_agg(rp), '[]') FROM regionpartner_g rp) AS regionpartner
+";
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$agg = $stmt->fetch();
+
+$total = (int) $agg['total'];
+$kpiRow = json_decode($agg['kpi'], true) ?: ['n' => 0, 'avg_age' => null, 'avg_duration' => null, 'nhit_pct' => null, 'male_pct' => null, 'female_pct' => null];
+$gender = json_decode($agg['gender'], true);
+$ageRaw = json_decode($agg['age'], true);
+$qualification = json_decode($agg['qualification'], true);
+$region = json_decode($agg['region'], true);
+$business = json_decode($agg['business'], true);
+$partner = json_decode($agg['partner'], true);
+$stateAll = json_decode($agg['state'], true);
+$duration = json_decode($agg['duration'], true);
+$intakeRows = json_decode($agg['intake'], true);
+$canIdRows = json_decode($agg['canid'], true);
+$regionPartnerRows = json_decode($agg['regionpartner'], true);
+
 $ageMap = [];
-foreach ($ageRaw as $r) { $ageMap[$r['name']] = (int)$r['count']; }
+foreach ($ageRaw as $r) { $ageMap[$r['name']] = (int) $r['count']; }
 $ageBuckets = [];
 foreach (['18-20', '21-23', '24-26', '27-29'] as $b) {
     $ageBuckets[] = ['name' => $b, 'count' => $ageMap[$b] ?? 0];
 }
 
-$qualification = q($pdo, "SELECT $QUAL_EXPR AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
-$region = q($pdo, "SELECT INITCAP(TRIM(region)) AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
-$business = q($pdo, "SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
-$partner = q($pdo, "SELECT TRIM(implementation_partner) AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
-
-$stateAll = q($pdo, "SELECT INITCAP(TRIM(state_name)) AS name, COUNT(*) AS count FROM dost2026 $whereSql GROUP BY 1 ORDER BY count DESC", $params);
 $state = array_slice($stateAll, 0, 12);
-$stateOther = array_sum(array_map(fn($r) => (int)$r['count'], array_slice($stateAll, 12)));
+$stateOther = array_sum(array_map(fn($r) => (int) $r['count'], array_slice($stateAll, 12)));
 if ($stateOther > 0) $state[] = ['name' => 'Other', 'count' => $stateOther];
 
-/* duration filter (ojt_duration IS NOT NULL) has to merge into $whereSql's own WHERE/no-WHERE case: */
-$durSql = $whereSql === ""
-    ? "SELECT NULLIF(ojt_duration,'')::int AS name, COUNT(*) AS count FROM dost2026 WHERE NULLIF(ojt_duration,'') IS NOT NULL GROUP BY 1 ORDER BY 1"
-    : "SELECT NULLIF(ojt_duration,'')::int AS name, COUNT(*) AS count FROM dost2026 $whereSql AND NULLIF(ojt_duration,'') IS NOT NULL GROUP BY 1 ORDER BY 1";
-$duration = q($pdo, $durSql, $params);
+$businessNames = array_map(fn($r) => $r['name'], $business);
+$partnerNames = array_map(fn($r) => $r['name'], $partner);
 
-/* day-wise candidate intake, split by business_type, driven off ojt_start_date */
-$intakeSql = $whereSql === ""
-    ? "SELECT ojt_start_date AS d, to_char(ojt_start_date,'DD Mon') AS label, TRIM(business_type) AS business, COUNT(*) AS count
-       FROM dost2026 WHERE ojt_start_date IS NOT NULL GROUP BY ojt_start_date, business_type ORDER BY ojt_start_date"
-    : "SELECT ojt_start_date AS d, to_char(ojt_start_date,'DD Mon') AS label, TRIM(business_type) AS business, COUNT(*) AS count
-       FROM dost2026 $whereSql AND ojt_start_date IS NOT NULL GROUP BY ojt_start_date, business_type ORDER BY ojt_start_date";
-$intakeRows = q($pdo, $intakeSql, $params);
 $intakeMap = [];
 $intakeOrder = [];
 foreach ($intakeRows as $r) {
     if (!isset($intakeMap[$r['label']])) { $intakeMap[$r['label']] = []; $intakeOrder[] = $r['label']; }
     $intakeMap[$r['label']][$r['business']] = (int) $r['count'];
 }
-$businessNames = array_map(fn($r) => $r['name'], $business);
-
-/* CAN ID (e-KYC) generated = any non-null value starting "CAN" in can_id_ekyc */
-$canIdSql = $whereSql === ""
-    ? "SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM dost2026 WHERE UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1"
-    : "SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM dost2026 $whereSql AND UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1";
-$canIdRows = q($pdo, $canIdSql, $params);
-$canIdMap = [];
-foreach ($canIdRows as $r) { $canIdMap[$r['name']] = (int) $r['count']; }
-$canIdByBusiness = [];
-foreach ($businessNames as $bname) { $canIdByBusiness[] = ['name' => $bname, 'count' => $canIdMap[$bname] ?? 0]; }
-
 $dailyIntake = [];
 foreach ($intakeOrder as $label) {
     $entry = ['label' => $label];
@@ -111,24 +142,19 @@ foreach ($intakeOrder as $label) {
     $dailyIntake[] = $entry;
 }
 
+$canIdMap = [];
+foreach ($canIdRows as $r) { $canIdMap[$r['name']] = (int) $r['count']; }
+$canIdByBusiness = [];
+foreach ($businessNames as $bname) { $canIdByBusiness[] = ['name' => $bname, 'count' => $canIdMap[$bname] ?? 0]; }
+
 $topRegions = array_slice(array_map(fn($r) => $r['name'], $region), 0, 8);
+$rpMap = [];
+foreach ($regionPartnerRows as $r) { $rpMap[$r['region']][$r['partner']] = (int) $r['count']; }
 $regionPartner = [];
-if ($topRegions) {
-    $ph = [];
-    $rpParams = $params;
-    foreach ($topRegions as $i => $rname) { $ph[] = ":rp$i"; $rpParams[":rp$i"] = $rname; }
-    $rpWhere = $whereSql === "" ? "WHERE INITCAP(TRIM(region)) IN (" . implode(",", $ph) . ")"
-                                 : "$whereSql AND INITCAP(TRIM(region)) IN (" . implode(",", $ph) . ")";
-    $rpRows = q($pdo, "SELECT INITCAP(TRIM(region)) AS region, TRIM(implementation_partner) AS partner, COUNT(*) AS count
-                        FROM dost2026 $rpWhere GROUP BY 1, 2", $rpParams);
-    $rpMap = [];
-    foreach ($rpRows as $r) { $rpMap[$r['region']][$r['partner']] = (int)$r['count']; }
-    $partnerNames = array_map(fn($r) => $r['name'], $partner);
-    foreach ($topRegions as $rname) {
-        $entry = ['label' => $rname];
-        foreach ($partnerNames as $pname) { $entry[$pname] = $rpMap[$rname][$pname] ?? 0; }
-        $regionPartner[] = $entry;
-    }
+foreach ($topRegions as $rname) {
+    $entry = ['label' => $rname];
+    foreach ($partnerNames as $pname) { $entry[$pname] = $rpMap[$rname][$pname] ?? 0; }
+    $regionPartner[] = $entry;
 }
 
 echo json_encode([
@@ -153,7 +179,7 @@ echo json_encode([
     'dailyIntake' => $dailyIntake,
     'businessNames' => $businessNames,
     'regionPartner' => $regionPartner,
-    'partnerNames' => array_map(fn($r) => $r['name'], $partner),
+    'partnerNames' => $partnerNames,
     'filterOptions' => $filterOptions,
     'session' => ['username' => $_SESSION['username'], 'role' => $_SESSION['role'], 'displayName' => $_SESSION['display_name']],
 ], JSON_UNESCAPED_UNICODE);
