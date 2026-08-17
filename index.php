@@ -9,7 +9,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OJT Pulse</title>
+<title>SAMSUNG DOST OJT</title>
 <style>
   :root {
     color-scheme: light;
@@ -138,7 +138,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
   .logo-chip.dost img { height: 42px; }
 
   .filter-bar {
-    display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+    display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; position: relative; z-index: 15;
     background: var(--glass-bg); backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
     border: 1px solid var(--glass-border); border-radius: 16px; padding: 14px 16px; box-shadow: var(--glass-shadow);
   }
@@ -218,6 +218,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
 
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-secondary); }
   .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-item b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .legend-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
 
   .viz-tooltip {
@@ -301,12 +302,12 @@ $isAdmin = $_SESSION['role'] === 'ALL';
           <span class="logo-chip dost"><img src="assets/samsung-dost-logo.jpg" alt="Samsung Dost"></span>
         </div>
         <p class="hdr-eyebrow">CSR &middot; Workforce Onboarding</p>
-        <h1>OJT Pulse</h1>
+        <h1>SAMSUNG DOST OJT</h1>
       </div>
       <div class="hdr-meta">
         <div>
           <div><strong id="metaTotal">&mdash;</strong> Candidates Tracked</div>
-          <div>Live  &middot; <code>Samsung Dost</code> (table)</div>
+          <div>Live  &middot; <code>Samsung Dost</code></div>
         </div>
         <div class="hdr-user">
           <div class="who"><?= htmlspecialchars($_SESSION['display_name']) ?><span class="role-pill"><?= htmlspecialchars($_SESSION['role']) ?></span></div>
@@ -358,7 +359,7 @@ $isAdmin = $_SESSION['role'] === 'ALL';
       </div>
       <div class="card">
         <div class="card-title">Business vertical mix</div>
-        <div class="card-note">MX = Mobile, DA = Digital Accessories, VD = Value Deals</div>
+        <div class="card-note">--</div>
         <div class="chart-wrap"><div id="chartBusiness"></div></div>
       </div>
     </div>
@@ -453,8 +454,10 @@ function hBarChart(mount, data, opts = {}) {
 function vBarChart(mount, data, opts = {}) {
   if (!data.length) return emptyState(mount);
   const color = opts.color || COLORS().accent;
-  const W = opts.width || 560, H = opts.height || 240;
-  const padL = 34, padB = 30, padT = 14, padR = 8;
+  const W = opts.width || 560;
+  const rotate = !!opts.rotateLabels;
+  const padL = 34, padB = rotate ? 62 : 30, padT = 22, padR = 8;
+  const H = opts.height || 240;
   const plotW = W - padL - padR, plotH = H - padB - padT;
   const max = Math.max(...data.map(d => d.count), 1) * 1.12;
   const bw = plotW / data.length;
@@ -471,7 +474,15 @@ function vBarChart(mount, data, opts = {}) {
     const y = padT + plotH - h;
     const g = svgEl('g', { class: 'bar-hit' });
     g.appendChild(svgEl('rect', { class: 'mark', x, y, width: w, height: Math.max(2, h), rx: 4, fill: color }));
-    const lbl = svgEl('text', { x: x + w / 2, y: padT + plotH + 16, 'text-anchor': 'middle', class: 'axis-label' });
+    if (d.count > 0) {
+      const val = svgEl('text', { x: x + w / 2, y: y - 6, 'text-anchor': 'middle', class: 'value-label' });
+      val.textContent = fmt(d.count); g.appendChild(val);
+    }
+    const lblAttrs = rotate
+      ? { x: x + w / 2, y: padT + plotH + 10, 'text-anchor': 'end', class: 'axis-label',
+          transform: `rotate(-40 ${x + w / 2} ${padT + plotH + 10})` }
+      : { x: x + w / 2, y: padT + plotH + 16, 'text-anchor': 'middle', class: 'axis-label' };
+    const lbl = svgEl('text', lblAttrs);
     lbl.textContent = d.name; g.appendChild(lbl);
     g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} candidates`));
     g.addEventListener('mouseleave', hideTip);
@@ -483,7 +494,7 @@ function vBarChart(mount, data, opts = {}) {
 function groupedBarChart(mount, data, series, opts = {}) {
   if (!data.length) return emptyState(mount);
   const W = opts.width || 560, H = opts.height || 260;
-  const padL = 40, padB = 34, padT = 14, padR = 8;
+  const padL = 40, padB = 34, padT = 22, padR = 8;
   const plotW = W - padL - padR, plotH = H - padB - padT;
   const max = Math.max(...data.flatMap(d => series.map(s => d[s.key])), 1) * 1.15;
   const groupW = plotW / data.length;
@@ -503,6 +514,10 @@ function groupedBarChart(mount, data, series, opts = {}) {
       const y = padT + plotH - h;
       const g = svgEl('g', { class: 'bar-hit' });
       g.appendChild(svgEl('rect', { class: 'mark', x, y, width: barW - 3, height: Math.max(2, h), rx: 3, fill: s.color }));
+      if (val > 0 && barW >= 14) {
+        const valLbl = svgEl('text', { x: x + (barW - 3) / 2, y: y - 4, 'text-anchor': 'middle', class: 'value-label', style: 'font-size:8.5px' });
+        valLbl.textContent = fmt(val); g.appendChild(valLbl);
+      }
       g.addEventListener('mousemove', e => showTip(e, `<b>${d.label}</b><br>${s.name}: ${fmt(val)}`));
       g.addEventListener('mouseleave', hideTip);
       svg.appendChild(g);
@@ -534,6 +549,18 @@ function donutChart(mount, data, opts = {}) {
     g.addEventListener('mousemove', e => showTip(e, `<b>${d.name}</b><br>${fmt(d.count)} (${(frac * 100).toFixed(1)}%)`));
     g.addEventListener('mouseleave', hideTip);
     svg.appendChild(g);
+    if (frac >= 0.12) {
+      const startFrac = offset / circumference;
+      const midAngle = (-90 + startFrac * 360 + (frac * 360) / 2) * Math.PI / 180;
+      const lx = cx + r * Math.cos(midAngle);
+      const ly = cy + r * Math.sin(midAngle);
+      const valText = svgEl('text', {
+        x: lx, y: ly + 4, 'text-anchor': 'middle',
+        style: 'font-size:11px;font-weight:700;fill:#ffffff;paint-order:stroke;stroke:rgba(0,0,0,0.4);stroke-width:2.5px;stroke-linejoin:round;',
+      });
+      valText.textContent = fmt(d.count);
+      svg.appendChild(valText);
+    }
     offset += circumference * frac;
   });
   const label = svgEl('text', { x: cx, y: cy - 3, 'text-anchor': 'middle', class: 'value-label', style: 'font-size:19px' });
@@ -550,7 +577,8 @@ function legend(mount, items) {
   items.forEach(it => {
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = `<span class="legend-swatch" style="background:${it.color}"></span>${it.name}`;
+    const valuePart = it.count != null ? ` <b>${fmt(it.count)}</b>` : '';
+    item.innerHTML = `<span class="legend-swatch" style="background:${it.color}"></span>${it.name}${valuePart}`;
     el.appendChild(item);
   });
   mount.appendChild(el);
@@ -748,10 +776,10 @@ function renderAll(data) {
   vBarChart(chartAge, data.ageBuckets, { width: 340, height: 220, color: c.accent });
 
   const chartQual = document.getElementById('chartQual'); clear(chartQual);
-  hBarChart(chartQual, data.qualification, { width: 340, labelW: 108, rowH: 22 });
+  vBarChart(chartQual, data.qualification, { width: 340, height: 250, color: c.accent, rotateLabels: true });
 
   const chartRegion = document.getElementById('chartRegion'); clear(chartRegion);
-  hBarChart(chartRegion, data.region, { width: 560, labelW: 84, rowH: 21 });
+  vBarChart(chartRegion, data.region, { width: 640, height: 280, color: c.accent, rotateLabels: true });
 
   const partnerColors = { TSSC: c.accent, ESSCI: c.accent2 };
   const fallbackColors = [c.accent, c.accent2, c.slot3, c.slot4];
@@ -761,7 +789,7 @@ function renderAll(data) {
   if (data.regionPartner.length) legend(chartRegionPartner, partnerSeries.map(s => ({ name: s.name, color: s.color })));
 
   const chartState = document.getElementById('chartState'); clear(chartState);
-  hBarChart(chartState, data.state, { width: 560, labelW: 108, rowH: 21 });
+  vBarChart(chartState, data.state, { width: 1000, height: 280, color: c.accent, rotateLabels: true });
 }
 
 /* ---------------- candidate records table ---------------- */
