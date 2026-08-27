@@ -76,8 +76,8 @@ partner_g AS (SELECT TRIM(implementation_partner) AS name, COUNT(*) AS count FRO
 state_g AS (SELECT INITCAP(TRIM(state_name)) AS name, COUNT(*) AS count FROM base GROUP BY 1),
 duration_g AS (SELECT NULLIF(ojt_duration,'')::int AS name, COUNT(*) AS count FROM base WHERE NULLIF(ojt_duration,'') IS NOT NULL GROUP BY 1),
 intake_g AS (
-    SELECT ojt_start_date AS d, to_char(ojt_start_date,'DD Mon') AS label, TRIM(business_type) AS business, COUNT(*) AS count
-    FROM base WHERE ojt_start_date IS NOT NULL GROUP BY 1, 2, 3
+    SELECT ojt_start_date AS d, TRIM(business_type) AS business, COUNT(*) AS count
+    FROM base WHERE ojt_start_date IS NOT NULL GROUP BY 1, 2
 ),
 canid_g AS (SELECT TRIM(business_type) AS name, COUNT(*) AS count FROM base WHERE UPPER(can_id_ekyc) LIKE 'CAN%' GROUP BY 1),
 regionpartner_g AS (SELECT INITCAP(TRIM(region)) AS region, TRIM(implementation_partner) AS partner, COUNT(*) AS count FROM base GROUP BY 1, 2),
@@ -93,7 +93,7 @@ SELECT
     (SELECT COALESCE(json_agg(p ORDER BY p.count DESC), '[]') FROM partner_g p) AS partner,
     (SELECT COALESCE(json_agg(s ORDER BY s.count DESC), '[]') FROM state_g s) AS state,
     (SELECT COALESCE(json_agg(d ORDER BY d.name), '[]') FROM duration_g d) AS duration,
-    (SELECT COALESCE(json_agg(json_build_object('label', i.label, 'business', i.business, 'count', i.count) ORDER BY i.d), '[]') FROM intake_g i) AS intake,
+    (SELECT COALESCE(json_agg(json_build_object('date', i.d, 'business', i.business, 'count', i.count) ORDER BY i.d), '[]') FROM intake_g i) AS intake,
     (SELECT COALESCE(json_agg(c ORDER BY c.count DESC), '[]') FROM canid_g c) AS canid,
     (SELECT COALESCE(json_agg(rp), '[]') FROM regionpartner_g rp) AS regionpartner
 ";
@@ -129,17 +129,59 @@ if ($stateOther > 0) $state[] = ['name' => 'Other', 'count' => $stateOther];
 $businessNames = array_map(fn($r) => $r['name'], $business);
 $partnerNames = array_map(fn($r) => $r['name'], $partner);
 
-$intakeMap = [];
-$intakeOrder = [];
-foreach ($intakeRows as $r) {
-    if (!isset($intakeMap[$r['label']])) { $intakeMap[$r['label']] = []; $intakeOrder[] = $r['label']; }
-    $intakeMap[$r['label']][$r['business']] = (int) $r['count'];
+/* Day-by-day bars stop being readable once a few weeks of intake pile up,
+   so days are folded into ~10-day windows (1st-10th / 11th-20th / 21st-end
+   of each month). The very first window starts at the earliest date in the
+   data rather than the 1st/11th/21st boundary, and the window holding the
+   most recent date is always left open-ended ("...to Till Date") since
+   it's still accumulating new candidates. */
+function ordinal(int $n): string {
+    if ($n % 100 >= 11 && $n % 100 <= 13) return $n . 'th';
+    return $n . (['th', 'st', 'nd', 'rd'][$n % 10] ?? 'th');
 }
+function decanKey(string $date): string {
+    [$y, $m, $d] = array_map('intval', explode('-', $date));
+    $decan = $d <= 10 ? 1 : ($d <= 20 ? 2 : 3);
+    return sprintf('%04d-%02d-%d', $y, $m, $decan);
+}
+function decanBounds(string $key): array {
+    [$y, $m, $decan] = array_map('intval', explode('-', $key));
+    if ($decan === 1) return [1, 10, $y, $m];
+    if ($decan === 2) return [11, 20, $y, $m];
+    return [21, (int) date('t', mktime(0, 0, 0, $m, 1, $y)), $y, $m];
+}
+
+$bucketSums = [];
+$bucketOrder = [];
+$allDates = [];
+foreach ($intakeRows as $r) {
+    $date = $r['date'];
+    $allDates[] = $date;
+    $key = decanKey($date);
+    if (!isset($bucketSums[$key])) { $bucketSums[$key] = []; $bucketOrder[] = $key; }
+    $bucketSums[$key][$r['business']] = ($bucketSums[$key][$r['business']] ?? 0) + (int) $r['count'];
+}
+sort($bucketOrder);
+
 $dailyIntake = [];
-foreach ($intakeOrder as $label) {
-    $entry = ['label' => $label];
-    foreach ($businessNames as $bname) { $entry[$bname] = $intakeMap[$label][$bname] ?? 0; }
-    $dailyIntake[] = $entry;
+if ($allDates) {
+    sort($allDates);
+    $minDate = $allDates[0];
+    $maxDate = end($allDates);
+    $minKey = decanKey($minDate);
+    $maxKey = decanKey($maxDate);
+
+    foreach ($bucketOrder as $key) {
+        [$startDay, $endDay, $y, $m] = decanBounds($key);
+        $effectiveStart = ($key === $minKey) ? (int) substr($minDate, 8, 2) : $startDay;
+        $mon = date('M', mktime(0, 0, 0, $m, 1, $y));
+        $label = ($key === $maxKey)
+            ? ordinal($effectiveStart) . " $mon to Till Date"
+            : ordinal($effectiveStart) . " to " . ordinal($endDay) . " $mon";
+        $entry = ['label' => $label];
+        foreach ($businessNames as $bname) { $entry[$bname] = $bucketSums[$key][$bname] ?? 0; }
+        $dailyIntake[] = $entry;
+    }
 }
 
 $canIdMap = [];
